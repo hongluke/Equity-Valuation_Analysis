@@ -1,0 +1,420 @@
+---
+title: "Project"
+author: "Moustafa Abdelaziz, Erik Wong, Luke Hong"
+date: "4/7/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Libraries Used}
+options(warn=-1)
+library(rvest)
+library(xml2)
+library(magrittr)
+library(dplyr)
+library(stringr)
+require(distr)
+library(RSQLite)
+library(tidyverse)
+library(caret)
+
+```
+
+
+
+Function that creates income statement by ticker by scraping data from Nasdaq.
+```{r Creates an Income Statement By Ticker}
+income_statement_by_ticker <- function(ticker) {
+  
+  #page used to scrape data regarding income statement values
+  page <- read_html(paste(paste("https://www.nasdaq.com/symbol/", ticker, sep=""), "/financials", sep=""))
+  income_statement <- html_text(html_nodes(page, "td+ td , .td_genTable+ td , th"))
+  
+  #
+  income_df <- data.frame(income_statement)
+  income_df <- data.frame(income_df[2:nrow(income_df),])
+  names(income_df) <- c("Values")
+  income_df <- income_df[income_df != ""]
+  income_df <- income_df[income_df != "Operating Expenses"]
+  
+  company_financials <- data.frame(ticker = double(),
+                                   "2018" = double(),
+                                   "2017" = double(),
+                                   "2016" = double(),
+                                   "2015"= double())
+  
+  if (length(income_df) > 2) {
+    for (val in seq(from=6, to=length(income_df), by=5)) {
+      row <- c(as.character(income_df[val]), income_df[val+1], income_df[val+2], income_df[val+3], income_df[val+4])
+      company_financials[nrow(company_financials)+1,] <- row }
+    
+    colnames(company_financials)[1] <- ticker
+  }
+  company_financials
+}
+
+```
+
+
+
+The three compiled financial statements of all S&P 500 companies were scraped from Nasdaq and stored in a csv for easy access.
+```{r Read Three Compiled Financial Statements of All S&P 500 Companies }
+
+final_income <- read.csv("compiled_income_statements.csv", sep=",", TRUE)
+final_balance <- read.csv("compiled_balance_sheets.csv", sep=",", TRUE)
+final_cash <- read.csv("compiled_cash_flows.csv", sep=",", TRUE)
+
+```
+
+
+Functions used for cleaning our data from the compiled financial statements.
+```{r cleaning functions}
+clean_value <- function(x) {
+  
+  if (!is.na(x)) {
+    if (substr(x, nchar(x), nchar(x)) == "B") {
+      x <- as.numeric(substr(x, 0, nchar(x) -1)) * 1000000000
+    }
+    
+    else if (substr(x, nchar(x), nchar(x)) == "M") {
+      x <- as.numeric(substr(x, 0, nchar(x) -1)) * 1000000
+    }
+    
+    else if (substr(x, nchar(x), nchar(x)) == "k") {
+      x <- as.numeric(substr(x, 0, nchar(x) -1)) * 1000
+    }
+    
+    else if (substr(x, nchar(x), nchar(x)) == "%") {
+      x <- as.numeric(substr(x, 0, nchar(x) -1)) / 100
+    }
+  }
+  x
+}
+
+clean_number <- function(x) {
+  x <- gsub("[,]", "", x)
+  x <- gsub("[(]", "-", x)
+  x <- gsub("[)]", "", x)
+  x <- gsub("[$]", "", x)
+  x <- as.double(x)
+  x
+}
+
+same_names <- function(df1, df2) {
+  
+  boolean <- TRUE
+  
+  for (name1 in names(df1)) {
+    if (!(name1 %in% names(df2))) {
+      boolean <- FALSE
+    }
+  }
+  
+  boolean
+}
+
+
+```
+
+
+Compiles all Tickers from the S&P 500 and their relative industries.
+```{r Tickers and their relative Industries in the S&P 500 }
+ticker_url <- read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+ticker_and_industry_list <- html_text(html_nodes(ticker_url, "#constituents td:nth-child(2) , #constituents td:nth-child(4)"))
+
+ticker_and_industry <- data.frame("Ticker" = double(), 
+                                  "Industry" = double())
+
+for (val in seq(from=1, to=length(ticker_and_industry_list), by=2)) {
+  
+  row <- c(as.character(ticker_and_industry_list[val]), ticker_and_industry_list[val+1])
+  ticker_and_industry[nrow(ticker_and_industry)+1,] <- row }
+
+#ticker_and_industry
+
+```
+
+
+Complex linear regression model using data from the S&P 500 for both train and test sets. 
+```{r linear Regression Analysis}
+
+clean_key_stats <- read.csv("clean_key_stats.csv", sep=",", stringsAsFactors = FALSE, check.names = FALSE)
+
+clean_key_stats <- dplyr::select(clean_key_stats, -c("5 Year Average Dividend Yield 4", "Forward Annual Dividend Rate 4",  "Forward Annual Dividend Yield 4",  "Last Split Factor (new per old) 2", "Quarterly Earnings Growth (yoy)", "Short % of Float (Mar 15, 2019) 4",  "Trailing Annual Dividend Rate 3",  "Trailing Annual Dividend Yield 3"))
+
+clean_key_stats <- clean_key_stats[complete.cases(clean_key_stats),]
+clean_key_stats[clean_key_stats == "N/A"]  <- NA
+clean_key_stats <- na.omit(clean_key_stats)
+clean_key_stats <- dplyr::select(clean_key_stats,  -c("ticker"))
+clean_key_stats <- dplyr::select(clean_key_stats, -c("S&P500 52-Week Change 3"))
+
+for (i in 2:ncol(clean_key_stats)) {
+  for (j in 1:nrow(clean_key_stats)) {
+    clean_key_stats[[i]][[j]] <- clean_number(clean_key_stats[[i]][[j]])
+  }
+}
+#clean_key_stats
+
+clean_key_stats <- clean_key_stats%>% mutate_all(funs(type.convert(as.double(.))))
+
+norm_clean_key_stats <- clean_key_stats
+
+for (i in 3:ncol(norm_clean_key_stats)) {
+  max1 <- as.numeric(max(norm_clean_key_stats[[i]]))
+  min1 <- as.numeric(min(norm_clean_key_stats[[i]]))
+  for (j in 1:nrow(norm_clean_key_stats)) {
+    norm_clean_key_stats[[i]][[j]] <- (as.numeric(norm_clean_key_stats[[i]][[j]]) - min1) / (max1 - min1)
+  }
+}
+
+
+#clean_key_stats
+sample_size <- floor(0.70 * nrow(norm_clean_key_stats))
+
+classes <- sapply(norm_clean_key_stats, class)
+set.seed(120)
+
+new_set <- sample(seq_len(nrow(norm_clean_key_stats)), size = sample_size)
+non_norm_train <- clean_key_stats[new_set, ]
+initial_test <- norm_clean_key_stats[-new_set, ]
+initial_train <- norm_clean_key_stats[new_set, ]
+
+```
+
+
+Complex model cont. Removes the least significant variables one at a time to ensure that only the most significant variables are considered and are not removed prematurely.
+```{r Removing Insignificant Variables} 
+updated_train <- initial_train
+updated_test <- initial_test
+train_control <- trainControl(method="repeatedcv", number=5, repeats=3)
+has_insignificant_vars <- TRUE
+while(has_insignificant_vars) {
+  test_model <- caret::train(price~., data=updated_train, trControl=train_control, method="lm")
+  
+  prob <- data.frame(summary(test_model)$coefficients[,"Pr(>|t|)"])
+  prob <- prob[1:nrow(prob),]
+  prob <- data.frame(prob)
+  
+  variables <- summary(test_model)$coefficients[,0]
+  
+  variables <- as.data.frame(row.names(variables))
+  
+  prob <- cbind(variables, prob)
+  
+  names(prob) <- c("Variable", "Probability")
+  prob
+  prob <- data.frame(prob[2:nrow(prob),])
+  max_p <- max(prob[,"Probability"]) 
+  if (max_p <= 0.05) {
+    has_insignificant_vars <- FALSE
+  }
+  else {
+    insig_var <- prob[prob[,"Probability"] == max_p,1]
+    updated_train <- dplyr::select(updated_train, -c(insig_var))
+    updated_test <- dplyr::select(updated_test, -c(insig_var))
+  }
+}
+
+#updated_train
+
+
+# train the model
+complex_model <- caret::train(price~., data=updated_train, trControl=train_control, method="lm")
+summary(complex_model)
+prediction <- complex_model %>% predict(updated_test)
+#prediction
+```
+
+The simple model takes the most significant variables in the initial screenining of the model. 
+```{r Simple Model}
+library(caret)
+library(tidyverse)
+library(dplyr)
+
+clean_key_stats <- read.csv("clean_key_stats3.csv", sep=",", stringsAsFactors = FALSE, check.names = FALSE)
+clean_key_stats <- clean_key_stats[complete.cases(clean_key_stats),]
+clean_key_stats <- na.omit(clean_key_stats)
+clean_key_stats[clean_key_stats == "N/A"]  <- NA
+clean_key_stats <- na.omit(clean_key_stats)
+
+for (i in 2:ncol(clean_key_stats)) {
+  for (j in 1:nrow(clean_key_stats)) {
+    clean_key_stats[[i]][[j]] <- clean_number(clean_key_stats[[i]][[j]])
+  }
+}
+
+clean_key_stats$`200-Day Moving Average 3` <- as.numeric(as.character(clean_key_stats$`200-Day Moving Average 3`))
+clean_key_stats$`50-Day Moving Average 3` <- as.numeric(as.character(clean_key_stats$`50-Day Moving Average 3`))
+clean_key_stats$`52 Week High 3` <- as.numeric(as.character(clean_key_stats$`52 Week High 3`))
+clean_key_stats$`52 Week Low 3` <- as.numeric(as.character(clean_key_stats$`52 Week Low 3`))
+clean_key_stats$`Total Debt/Equity (mrq)` <- as.numeric(as.character(clean_key_stats$`Total Debt/Equity (mrq)`))
+
+for (i in 3:ncol(clean_key_stats)) {
+  max1 <- as.numeric(max(clean_key_stats[[i]]))
+  min1 <- as.numeric(min(clean_key_stats[[i]]))
+  for (j in 1:nrow(clean_key_stats)) {
+    clean_key_stats[[i]][[j]] <- (as.numeric(clean_key_stats[[i]][[j]]) - min1) / (max1 - min1)
+  }
+}
+clean_key_stats <- dplyr::select(clean_key_stats, -c("S&P500 52-Week Change 3"))
+
+clean_key_stats <- dplyr::select(clean_key_stats,  -c("ticker"))
+
+
+sample_size <- floor(0.70 * nrow(clean_key_stats))
+
+classes <- sapply(clean_key_stats, class)
+set.seed(100)
+
+new_set <- sample(seq_len(nrow(clean_key_stats)), size = sample_size)
+
+key_stats_significant <- dplyr::select(clean_key_stats, c("price", "200-Day Moving Average 3", "50-Day Moving Average 3", "52 Week High 3", "52 Week Low 3", "52-Week Change 3", "Book Value Per Share (mrq)", "Diluted EPS (ttm)", "Enterprise Value/EBITDA 6"))
+
+train <- key_stats_significant[new_set, ]
+test <- key_stats_significant[-new_set, ]
+
+simple_model <- lm(price ~., data = train)
+
+
+```
+
+
+Predicts a value using the complex model. If that value cannot be predicted due to missing data, the function will use the simple model to predict the value. 
+```{r prediction}
+
+value <- function(x) {
+  
+  key_stats <- data.frame(matrix(ncol=0, nrow=0))
+  
+  stats_url <- read_html(paste(paste(paste("https://finance.yahoo.com/quote/", x, sep=""), "/key-statistics?p=", sep = ""), x, sep =""))
+  
+  stats <- html_nodes(stats_url, "td") 
+  clean_stats <- html_text(stats)
+  
+  price_url <- read_html(paste("https://www.nasdaq.com/symbol/", x, sep=""))
+  price <- clean_number(html_text(html_nodes(price_url, "#qwidget_lastsale")))
+  
+  stats_df <- data.frame("Stat" = double(), "Value" = double())
+  
+  for (tick in seq(1, length(clean_stats), 2)) {
+    row <- c(as.character(clean_stats[tick]), clean_value(clean_stats[tick+1]))
+    stats_df[nrow(stats_df)+1,] <- row  
+  }
+  
+  stats_df <- stats_df[stats_df$Stat != "Fiscal Year Ends ",]
+  stats_df <- stats_df[stats_df$Stat != "Most Recent Quarter (mrq)",]
+  stats_df <- stats_df[stats_df$Stat != "Dividend Date 3",]
+  stats_df <- stats_df[stats_df$Stat != "Ex-Dividend Date 4",]
+  stats_df <- stats_df[stats_df$Stat != "Last Split Date 3",]
+  
+  spread_df <- spread(stats_df, "Stat", "Value")
+  if (nrow(key_stats) > 0) { 
+    if (same_names(spread_df, key_stats)) {
+      new_stats_df <- cbind(ticker = x, cbind(price, spread_df))
+      key_stats <- rbind(key_stats, new_stats_df)
+    }
+  } else {
+    new_stats_df <- cbind(ticker = x, cbind(price, spread_df))
+    key_stats <- rbind(key_stats, new_stats_df)
+  }
+  
+  test_value <- key_stats
+  for (val in 2:ncol(test_value)) {
+    
+    for (row in 1:nrow(test_value)) {
+      test_value[[val]][[row]] <- clean_number(as.character(test_value[[val]][[row]]))
+    }
+  }
+  
+  
+  test_value <- test_value[colnames(updated_train)]
+  test_value <- test_value%>% mutate_all(funs(type.convert(as.double(.))))
+  
+  normalized_data <- rbind(non_norm_train[colnames(updated_train)]%>% mutate_all(funs(type.convert(as.double(.)))), test_value)
+  
+  for (i in 2:ncol(normalized_data)) {
+    max1 <- as.numeric(max(normalized_data[[i]]))
+    min1 <- as.numeric(min(normalized_data[[i]]))
+    for (j in 1:nrow(normalized_data)) {
+      normalized_data[[i]][[j]] <- (as.numeric(normalized_data[[i]][[j]]) - min1) / (max1 - min1)
+    }
+  }
+  
+  new_val <- normalized_data[nrow(normalized_data),]
+  
+  
+  c_predict <- predict(complex_model, new_val)
+  
+  if (length(c_predict) == 0) {
+    
+    c_predict <- predict(simple_model, new_val)
+  }
+  c_predict
+}
+
+```
+
+
+Tests results to ensure validity. 
+```{r test}
+#returns 183.41 compared to value at approx 180 (would issue a buy recommendation)
+value("fb")
+
+#returns 199.45 compared to value at approx 199 (would issue a sell/hold recommendation)
+value("aapl")
+
+#returns 32.54 compared to value at approx 35 (would issue a sell/hold recommendation)
+value("twtr")
+
+#returns 286.68 compared to value at approx 267 (would issue a sell/hold recommendation)
+value("tsla")
+
+```
+
+
+Serves as a dictionary in conjunction with the S&P ticker list for RShiny queries.
+```{r russell 1000}
+
+russell_ticker_url <- read_html("https://en.wikipedia.org/wiki/Russell_1000_Index")
+russell_ticker_list <- html_text(html_nodes(russell_ticker_url, "td+ td"))
+
+russell_ticker_list <- russell_ticker_list[51:length(russell_ticker_list)]
+for (val in 1:length(russell_ticker_list)) {
+  russell_ticker_list[val] <- substr(russell_ticker_list[val], 0, nchar(russell_ticker_list[val])-1)
+}
+
+
+russell_df <- data.frame("Ticker" = double())
+for (val in russell_ticker_list) {
+  russell_df[nrow(russell_df)+1,] <- c(val)
+}
+
+```
+
+
+Compares our predicted value against the current market price to provide the user awith a recommendation.
+```{r}
+
+compare_vals <- function(x) {
+  
+  price_url <- read_html(paste("https://www.nasdaq.com/symbol/", x, sep=""))
+  price <- clean_number(html_text(html_nodes(price_url, "#qwidget_lastsale")))
+  recommendation <- if (value(x) > price) {
+    recommendation <- "Buy"
+  }
+  else {
+    recommendation <- "This Stock is Currently Over-Valued"
+  }
+  
+  paste(paste(paste(paste("Estimated Current Value: ", round(value(x), 2), sep =""), paste(" | Current Price: ", price, sep =""), sep=""), " | Recommendation: ", sep=""), recommendation, sep="")
+}
+
+```
+
+
+
+

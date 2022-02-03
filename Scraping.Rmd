@@ -1,0 +1,361 @@
+---
+title: "Scraper Functions"
+author: "Moustafa Abdelaziz, Erik Wong, Luke Hong"
+date: "4/16/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Justification for Techniques Used through out the project:
+
+There are several things of discussion: Our use of both a file system and sqlite database, our linear regression model, and explanation of data visuals.
+
+We used a file system to keep track of data because it took much to long to have to gather data each time, and it was easy to see our data within
+a csv file rather than loading the database in Rmd and using a query to see the data. 
+
+Our linear regression model uses a complex and simple model. This is because N/A's will render the complex model useless. We suspect that some companies may not have all the data for certain columns and some room for improvement would be to look at some more places that have NA values and exclude them when we build up our model again. This may include Dividend data, as some companies do not provide dividends. 
+
+Our data visuals will track selected items over a period of time. This is to help the user see how a company has been doing. It is hard to have precise explanations, since each company may have had different product releases, news, or general economic trends that may effect these historic data.
+
+```{r Scraping Financial Statements per Ticker}
+
+library(rvest)
+library(dplyr)
+library(RSQLite)
+library(distr)
+
+income_statement_by_ticker <- function(ticker) {
+  
+  page <- read_html(paste(paste("https://www.nasdaq.com/symbol/", ticker, sep=""), "/financials", sep=""))
+  income_statement <- html_text(html_nodes(page, "td+ td , .td_genTable+ td , th"))
+  
+  income_df <- data.frame(income_statement)
+  income_df <- data.frame(income_df[2:nrow(income_df),])
+  names(income_df) <- c("Values")
+  income_df <- income_df[income_df != ""]
+  income_df <- income_df[income_df != "Operating Expenses"]
+  
+  company_financials <- data.frame(ticker = double(),
+                                   "2018" = double(),
+                                   "2017" = double(),
+                                   "2016" = double(),
+                                   "2015"= double())
+  
+  if (length(income_df) > 2) {
+    for (val in seq(from=6, to=length(income_df), by=5)) {
+      row <- c(as.character(income_df[val]), income_df[val+1], income_df[val+2], income_df[val+3], income_df[val+4])
+      company_financials[nrow(company_financials)+1,] <- row }
+    
+    colnames(company_financials)[1] <- ticker
+  }
+  
+  company_financials
+}
+
+balance_sheet_by_ticker <- function(ticker) {
+  
+  page <- read_html(paste(paste("https://www.nasdaq.com/symbol/", ticker, sep=""), "/financials?query=balance-sheet", sep=""))
+  balance_sheet <- html_text(html_nodes(page, "td+ td , .td_genTable+ td , th"))
+  
+  balance_sheet_df <- data.frame(balance_sheet)
+  balance_sheet_df <- data.frame(balance_sheet_df[2:nrow(balance_sheet_df),])
+  names(balance_sheet_df) <- c("Values")
+  balance_sheet_df <- balance_sheet_df[balance_sheet_df != ""]
+  balance_sheet_df <- balance_sheet_df[balance_sheet_df != "Current Assets"]
+  balance_sheet_df <- balance_sheet_df[balance_sheet_df != "Long-Term Assets"]
+  balance_sheet_df <- balance_sheet_df[balance_sheet_df != "Current Liabilities"]
+  balance_sheet_df <- balance_sheet_df[balance_sheet_df != "Stock Holders Equity"]
+  
+  
+  company_financials <- data.frame(ticker = double(),
+                                   "2018" = double(),
+                                   "2017" = double(),
+                                   "2016" = double(),
+                                   "2015"= double())
+  
+  if (length(balance_sheet_df) > 2) {
+    for (val in seq(from=6, to=length(balance_sheet_df), by=5)) {
+      row <- c(as.character(balance_sheet_df[val]), balance_sheet_df[val+1], balance_sheet_df[val+2], balance_sheet_df[val+3], balance_sheet_df[val+4])
+      company_financials[nrow(company_financials)+1,] <- row }
+    
+    colnames(company_financials)[1] <- ticker
+  }
+  
+  company_financials
+}
+
+cash_flow_by_ticker <- function(ticker) {
+  
+  page <- read_html(paste(paste("https://www.nasdaq.com/symbol/", ticker, sep=""), "/financials?query=cash-flow", sep=""))
+  cash_flow <- html_text(html_nodes(page, "td+ td , .td_genTable+ td , th"))
+  
+  cash_flow_df <- data.frame(cash_flow)
+  cash_flow_df <- data.frame(cash_flow_df[2:nrow(cash_flow_df),])
+  names(cash_flow_df) <- c("Values")
+  cash_flow_df <- cash_flow_df[cash_flow_df != ""]
+  cash_flow_df <- cash_flow_df[cash_flow_df != "Cash Flows-Operating Activities"]
+  cash_flow_df <- cash_flow_df[cash_flow_df != "Changes in Operating Activities"]
+  cash_flow_df <- cash_flow_df[cash_flow_df != "Cash Flows-Investing Activities"]
+  cash_flow_df <- cash_flow_df[cash_flow_df != "Cash Flows-Financing Activities"]
+  
+  
+  company_financials <- data.frame(ticker = double(),
+                                   "2018" = double(),
+                                   "2017" = double(),
+                                   "2016" = double(),
+                                   "2015"= double())
+  
+  if (length(cash_flow_df) > 2) {
+    for (val in seq(from=6, to=length(cash_flow_df), by=5)) {
+      row <- c(as.character(cash_flow_df[val]), cash_flow_df[val+1], cash_flow_df[val+2], cash_flow_df[val+3], cash_flow_df[val+4])
+      company_financials[nrow(company_financials)+1,] <- row }
+    
+    colnames(company_financials)[1] <- ticker
+  }
+  
+  company_financials
+}
+
+# Results of scraping data for Apple
+income_statement_by_ticker("aapl")
+balance_sheet_by_ticker("aapl")
+cash_flow_by_ticker("aapl")
+```
+
+Compiles all Tickers from the S&P 500 and their relative industries.
+```{r Tickers and their relative Industries in the S&P 500 }
+ticker_url <- read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+ticker_and_industry_list <- html_text(html_nodes(ticker_url, "#constituents td:nth-child(2) , #constituents td:nth-child(4)"))
+
+ticker_and_industry <- data.frame("Ticker" = double(), 
+                                  "Industry" = double())
+
+for (val in seq(from=1, to=length(ticker_and_industry_list), by=2)) {
+  
+  row <- c(as.character(ticker_and_industry_list[val]), ticker_and_industry_list[val+1])
+  ticker_and_industry[nrow(ticker_and_industry)+1,] <- row }
+
+#ticker_and_industry
+
+```
+
+
+```{r tickers, eval=FALSE}
+
+
+db <- dbConnect(SQLite(), dbname = "financial_statements.sqlite")
+
+
+d <- Truncate(Weibull(shape=2, scale=30), lower=0, upper=5)
+
+income_statement_df <- data.frame("Ticker" = double(), 
+                                  "Line_Item" = double(), 
+                                  "X2018" = double(), 
+                                  "X2017" = double(), 
+                                  "X2016" = double(), 
+                                  "X2015" = double())
+
+balance_sheet_df <- data.frame("Ticker" = double(), 
+                               "Line_Item" = double(), 
+                               "X2018" = double(), 
+                               "X2017" = double(), 
+                               "X2016" = double(), 
+                               "X2015" = double())
+
+cash_flow_df <- data.frame("Ticker" = double(), 
+                           "Line_Item" = double(), 
+                           "X2018" = double(), 
+                           "X2017" = double(), 
+                           "X2016" = double(), 
+                           "X2015" = double())
+
+
+
+for (val in ticker_and_industry$Ticker) {
+  
+  if (file.exists(paste(val, ".csv", sep=""))) {
+    
+    income_statement <- read.csv(paste(val, ".csv", sep=""), TRUE, ",")
+    new_income <- cbind(rep(toupper(val), nrow(income_statement)), income_statement)
+    
+    names(new_income) <- c("Ticker", "Line_Item", "X2018", "X2017", "X2016", "X2015")
+    income_statement_df <- rbind(income_statement_df, new_income)
+    
+    dbWriteTable(conn = db, name = paste(val, "_income_statement", sep=""), value = new_income, row.names = FALSE, header = TRUE, overwrite = TRUE)
+  }
+  else {
+    income_statement <- income_statement_by_ticker(val)
+    # write.csv(income_statement, file = paste(val, ".csv", sep=""), row.names=FALSE)
+    new_income <- cbind(rep(toupper(val), nrow(income_statement)), income_statement)
+    
+    names(new_income) <- c("Ticker", "Line_Item", "X2018", "X2017", "X2016", "X2015")
+    income_statement_df <- rbind(income_statement_df, new_income)
+    
+    dbWriteTable(conn = db, name = paste(val, "_income_statement", sep=""), value = new_income, row.names = FALSE, header = TRUE, overwrite = TRUE)
+  }
+  
+  
+  if (file.exists(paste(val, "_balance.csv", sep=""))) {
+    balance_sheet <- read.csv(paste(val, "_balance.csv", sep=""), TRUE, ",")
+    new_balance <- cbind(rep(toupper(val), nrow(balance_sheet)), balance_sheet )
+    
+    names(new_balance) <- c("Ticker", "Line_Item", "X2018", "X2017", "X2016", "X2015")
+    balance_sheet_df <- rbind(balance_sheet_df, new_balance)
+    
+    
+    dbWriteTable(conn = db, name = paste(val, "_balance_sheet", sep=""), value = new_balance, row.names = FALSE, header = TRUE, overwrite = TRUE)
+    
+  }
+  else {
+    balance_sheet <- balance_sheet_by_ticker(val)
+    # write.csv(balance_sheet, file = paste(val, "_balance.csv", sep=""), row.names=FALSE)
+    new_balance <- cbind(rep(toupper(val), nrow(balance_sheet)), balance_sheet)
+    
+    names(new_balance) <- c("Ticker", "Line_Item", "X2018", "X2017", "X2016", "X2015")
+    balance_sheet_df <- rbind(balance_sheet_df, new_balance)
+    
+    dbWriteTable(conn = db, name = paste(val, "_balance_sheet", sep=""), value = new_balance, row.names = FALSE, header = TRUE, overwrite = TRUE)
+  }
+  
+  
+  if (file.exists(paste(val, "_cashflow.csv", sep=""))) {
+    
+    cash_flows <- read.csv(paste(val, "_cashflow.csv", sep=""), TRUE, ",")
+    new_cash <- cbind(rep(toupper(val), nrow(cash_flows)), cash_flows )
+    names(new_cash) <- c("Ticker", "Line_Item", "X2018", "X2017", "X2016", "X2015")
+    cash_flow_df <- rbind(cash_flow_df, new_cash)
+    
+    dbWriteTable(conn = db, name = paste(val, "_cash_flows", sep=""), value = new_cash, row.names = FALSE, header = TRUE, overwrite = TRUE)
+    
+  }
+  else {
+    cash_flows <- cash_flow_by_ticker(val)
+    # write.csv(cash_flows, file = paste(val, "_cashflow.csv", sep=""), row.names=FALSE)
+    new_cash <- cbind(rep(toupper(val), nrow(cash_flows)), cash_flows )
+    names(new_cash) <- c("Ticker", "Line_Item", "X2018", "X2017", "X2016", "X2015")
+    cash_flow_df <- rbind(cash_flow_df, new_cash)
+    
+    dbWriteTable(conn = db, name = paste(val, "_cash_flows", sep=""), value = new_cash, row.names = FALSE, header = TRUE, overwrite = TRUE)
+  }
+  
+  
+  
+  #Wrote csv files
+  #write.csv(new_df, file = paste(val, ".csv", sep=""), row.names=FALSE)
+  #Sys.sleep(d@r(1))
+  
+  #created tables based on the written files
+  
+  # }
+}
+
+dbWriteTable(conn = db, name = "income_statements", value = income_statement_df, row.names = FALSE, header = TRUE, overwrite = TRUE)
+dbWriteTable(conn = db, name = "balance_sheets", value = balance_sheet_df, row.names = FALSE, header = TRUE, overwrite = TRUE)
+dbWriteTable(conn = db, name = "cash_flows", value = cash_flow_df, row.names = FALSE, header = TRUE, overwrite = TRUE)
+
+write.csv(dbGetQuery(db, "SELECT * FROM income_statements"), "compiled_income_statements.csv", row.names = FALSE)
+write.csv(dbGetQuery(db, "SELECT * FROM balance_sheets"), "compiled_balance_sheets.csv", row.names = FALSE)
+write.csv(dbGetQuery(db, "SELECT * FROM cash_flows"), "compiled_cash_flows.csv", row.names = FALSE)
+
+
+
+```
+
+
+
+```{r Scraping S&P500 Tickers with their price for the model, eval=FALSE}
+
+key_stats <- data.frame(matrix(ncol=0, nrow=0))
+
+for (val in ticker_and_industry$Ticker) {
+  
+  stats_url <- read_html(paste(paste(paste("https://finance.yahoo.com/quote/", val, sep=""), "/key-statistics?p=", sep = ""), val, sep =""))
+  
+  stats <- html_nodes(stats_url, "td") 
+  clean_stats <- html_text(stats)
+  
+  price_url <- read_html(paste("https://www.nasdaq.com/symbol/", val, sep=""))
+  price <- clean_number(html_text(html_nodes(price_url, "#qwidget_lastsale")))
+  
+  stats_df <- data.frame("Stat" = double(), 
+                         "Value" = double())
+  
+  for (tick in seq(1, length(clean_stats), 2)) {
+    row <- c(as.character(clean_stats[tick]), clean_value(clean_stats[tick+1]))
+    stats_df[nrow(stats_df)+1,] <- row  
+  }
+  
+  stats_df <- stats_df[stats_df$Stat != "Fiscal Year Ends ",]
+  stats_df <- stats_df[stats_df$Stat != "Most Recent Quarter (mrq)",]
+  stats_df <- stats_df[stats_df$Stat != "Dividend Date 3",]
+  stats_df <- stats_df[stats_df$Stat != "Ex-Dividend Date 4",]
+  stats_df <- stats_df[stats_df$Stat != "Last Split Date 3",]
+  
+  spread_df <- spread(stats_df, "Stat", "Value")
+  if (nrow(key_stats) > 0) { 
+    if (same_names(spread_df, key_stats)) {
+      new_stats_df <- cbind(ticker = val, cbind(price, spread_df))
+      key_stats <- rbind(key_stats, new_stats_df)
+    }
+  } else {
+    new_stats_df <- cbind(ticker = val, cbind(price, spread_df))
+    key_stats <- rbind(key_stats, new_stats_df)
+  }
+}
+
+for (val in 2:ncol(key_stats)) {
+  
+  for (row in 1:nrow(key_stats)) {
+    key_stats[[val]][[row]] <- clean_value(as.character(key_stats[[val]][[row]]))
+  }
+}
+
+key_stats
+
+
+```
+
+
+
+
+
+Gets the Tickers for the Russel 1000
+```{r russell 1000}
+
+russell_ticker_url <- read_html("https://en.wikipedia.org/wiki/Russell_1000_Index")
+russell_ticker_list <- html_text(html_nodes(russell_ticker_url, "td+ td"))
+
+russell_ticker_list <- russell_ticker_list[51:length(russell_ticker_list)]
+for (val in 1:length(russell_ticker_list)) {
+  russell_ticker_list[val] <- substr(russell_ticker_list[val], 0, nchar(russell_ticker_list[val])-1)
+}
+
+
+russell_df <- data.frame("Ticker" = double())
+for (val in russell_ticker_list) {
+  russell_df[nrow(russell_df)+1,] <- c(val)
+}
+
+```
+
+
+Removes Less common data
+```{r Write csv, eval=FALSE}
+write.csv(key_stats, file = "russell_clean_key_stats.csv", row.names = FALSE)
+
+
+library(dplyr)
+key_stats <- dplyr::select(key_stats, -c("5 Year Average Dividend Yield 4", "Forward Annual Dividend Rate 4",  "Forward Annual Dividend Yield 4",  "Last Split Factor (new per old) 2", "Quarterly Earnings Growth (yoy)", "Short % of Float (Mar 15, 2019) 4",  "Trailing Annual Dividend Rate 3",  "Trailing Annual Dividend Yield 3"))
+
+
+
+# russel_ticker_list
+# key_stats
+
+```
+
+
+
